@@ -3,32 +3,33 @@ docker-machine rm manager0consul0 --force
 docker-machine rm manager1 --force
 docker-machine rm node0 --force
 docker-machine rm node1 --force
-docker-machine create -d virtualbox manager0consul0 &
-docker-machine create -d virtualbox manager1 &
-docker-machine create -d virtualbox node0 &
-docker-machine create -d virtualbox node1 &
-wait %1 %2 %3 %4
+docker-machine create -d virtualbox manager0consul0
+docker-machine create -d virtualbox manager1
+docker-machine create -d virtualbox node0
+docker-machine create -d virtualbox node1
 
+# Set up an consul discovery backend
 eval $(docker-machine env manager0consul0)
-clusterId=$(docker run --rm swarm create | tail -n1)
+docker run -d -p 8500:8500 --name=consul progrium/consul -server -bootstrap
+docker run -d -p 4000:4000 swarm manage -H :4000 --replication --advertise $(docker-machine ip manager0consul0):4000 consul://$(docker-machine ip manager0consul0):8500
 
-docker-machine ssh manager0consul0 "docker run -d -p 3376:3376 -t -v /var/lib/boot2docker:/certs:ro swarm manage -H 0.0.0.0:3376 --tlsverify --tlscacert=/certs/ca.pem --tlscert=/certs/server.pem --tlskey=/certs/server-key.pem token://$clusterId"
-
+# Create a high-availability Swarm cluster
+eval $(docker-machine env manager1)
+docker run -d swarm manage -H :4000 --replication --advertise $(docker-machine ip manager1):4000  consul://$(docker-machine ip manager0consul0):8500
 eval $(docker-machine env node0)
-docker-machine config node0
-docker run -d swarm join --addr=$(docker-machine ip node0):2376 token://$clusterId
-
+docker run -d swarm join --advertise=$(docker-machine ip node0):2375 consul://$(docker-machine ip manager0consul0):8500
 eval $(docker-machine env node1)
-docker-machine config node1
-docker run -d swarm join --addr=$(docker-machine ip node1):2376 token://$clusterId
+docker run -d swarm join --advertise=$(docker-machine ip node1):2375 consul://$(docker-machine ip manager0consul0):8500
 
-eval $(docker-machine env manager0consul0)
-DOCKER_HOST=$(docker-machine ip manager0consul0):3376
-docker info
-docker ps
-docker run hello-world
-docker ps -a
+# Communicate with the Swarm
+eval $(docekr-machine env manager0consul0)
+docker-machine ssh manager0consul0 docker -H :4000 info
+docker-machine ssh manager0consul0 docker -H :4000 run hello-world
+docker-machine ssh manager0consul0 docker -H :4000 ps
 
-#docker-machine rm manager0consul0 --force
-#docker-machine rm node0 --force
-#docker-machine rm node1 --force
+# Test the high-availability Swarm managers
+docker-machine ssh manager0consul0 docker ps
+docker-machine ssh manager0consul0 docker rm -f $(docker ps -q)
+docker-machine ssh manager0consul0 docker run -d -p 4000:4000 swarm manage -H :4000 --replication --advertise $(docker-machine ip manager0consul0):4000  consul://$(docker-machine ip manager0consul0):237
+docker-machine ssh manager0consul0 docker logs $(docker ps -q)
+docker-machine ssh manager0consul0 docker -H :4000 info
